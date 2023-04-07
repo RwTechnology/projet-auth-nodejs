@@ -1,67 +1,65 @@
+require("dotenv").config();
 const express = require("express");
 const ejs = require("ejs");
 const path = require("path");
 const fs = require("fs");
 const { cours, utilisateurs } = require("./data");
-const session = require("express-session");
+const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 
-require("dotenv").config();
-
 const app = express();
-const IN_PRODUCTION = process.env.NODE_ENV === "production";
-
-app.use(
-  session({
-    name: process.env.SESSION_NAME,
-    resave: false,
-    saveUninitialized: false,
-    secret: process.env.SESSION_SECRET,
-    cookie: {
-      maxAge: 1000 * 60 * 60 * 24 * 7,
-      sameSite: true,
-      secure: false,
-      // secure: IN_PRODUCTION,
-    },
-  })
-);
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-
-const protectionRoute = (req, res, next) => {
-  if (!req.session.idUtilisateur) {
-    res.redirect("/connexion");
-  } else {
-    next();
-  }
-};
-
-app.use((req, res, next) => {
-  const { idUtilisateur } = req.session;
-  if (idUtilisateur) {
-    res.locals.utilisateur = utilisateurs.find(
-      (utilisateur) => utilisateur.id === idUtilisateur
-    );
-  }
-  next();
-});
 
 app.engine("html", ejs.__express);
 
 app.use(express.static(path.join(__dirname, "public")));
 
+app.use(express.urlencoded({ extended: true }));
+
 app.set("view engine", "html");
 app.set("views", path.join(__dirname, "views"));
 
-app.get("/", (req, res) => {
-  const { utilisateur } = res.locals;
-  console.log(utilisateurs);
+const protectionRoute = (req, res, next) => {
+  const token = req.query.token;
+  if (token) {
+    jwt.verify(token, process.env.TOKEN_KEY, (err, utilisateur) => {
+      if (err) {
+        return res.redirect("/connexion");
+      }
+      utilisateur.token = token;
+      req.utilisateur = utilisateur;
+      next();
+    });
+  } else {
+    return res.redirect("/connexion");
+  }
+};
+
+const protectionLandPage = (req, res, next) => {
+  const token = req.query.token;
+  if (token) {
+    jwt.verify(token, process.env.TOKEN_KEY, (err, utilisateur) => {
+      if (err) {
+        req.utilisateur = undefined;
+      }
+      utilisateur.token = token;
+      req.utilisateur = utilisateur;
+    });
+  }
+  next();
+};
+
+app.get("/accueil", protectionLandPage, (req, res) => {
+  let utilisateur = req.utilisateur;
   res.render("index", { cours, utilisateur });
 });
-app.get("/connexion", (req, res) => {
+
+app.get("/", protectionLandPage, (req, res) => {
   res.render("connexion");
 });
 
+app.get("/connexion", async (req, res) => {
+  res.render("connexion");
+});
 app.post("/connexion", async (req, res) => {
   const { email, password } = req.body;
 
@@ -75,8 +73,12 @@ app.post("/connexion", async (req, res) => {
         utilisateur.password
       );
       if (validPassWord) {
-        req.session.idUtilisateur = utilisateur.id;
-        return res.redirect("/");
+        const token = jwt.sign(
+          { idUtilisateur: utilisateur.id, nom: utilisateur.nom, email },
+          process.env.TOKEN_KEY
+        );
+        utilisateur.token = token;
+        return res.render("index", { cours, utilisateur });
       } else {
         console.log("Mot de passe incorrect");
       }
@@ -86,7 +88,6 @@ app.post("/connexion", async (req, res) => {
   }
   res.redirect("/connexion");
 });
-
 app.get("/inscription", (req, res) => {
   res.render("inscription");
 });
@@ -108,16 +109,26 @@ app.post("/inscription", async (req, res) => {
         email,
         password: passwordToSave,
       };
+
       utilisateurs.push(nouvelUtilisateur);
-      req.session.idUtilisateur = nouvelUtilisateur.id;
-      return res.redirect("/");
+
+      const token = jwt.sign(
+        { idUtilisateur: nouvelUtilisateur.id, email },
+        process.env.TOKEN_KEY
+      );
+      nouvelUtilisateur.token = token;
+
+      return res.render("index", { cours, utilisateur: nouvelUtilisateur });
     }
   }
   res.redirect("/inscription");
 });
 
 app.get("/lectureVideo", protectionRoute, (req, res) => {
-  const { utilisateur } = res.locals;
+  const utilisateur = req.utilisateur;
+  if (!utilisateur) {
+    return res.redirect("/connexion");
+  }
   res.render("lectureVideo", { utilisateur });
 });
 
@@ -143,14 +154,9 @@ app.get("/video", (req, res) => {
   videoStream.pipe(res);
 });
 
-app.post("/deconnexion", (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      return res.redirect("/");
-    }
-    res.clearCookie(process.env.SESSION_NAME);
-    res.redirect("/");
-  });
+app.get("/deconnexion", (req, res) => {
+  // res.render("index", { cours, utilisateur: undefined });
+  res.render("connexion");
 });
 
 app.listen(4001);
